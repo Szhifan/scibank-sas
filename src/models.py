@@ -20,18 +20,12 @@ class ModelOutput:
     logits: torch.Tensor
     loss: Optional[torch.Tensor] = None
 class ClassifierHead(nn.Module):
-    def __init__(self, config, num_labels: int, n_frozen_layers: int = 0, freeze_embeddings: bool = False):
+    def __init__(self, config, num_labels: int):
      
         super(ClassifierHead, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.out_proj = nn.Linear(config.hidden_size, num_labels)
-        self.n_frozen_layers = n_frozen_layers
-        self.freeze_embeddings = freeze_embeddings
-        if freeze_embeddings:
-            self.freeze_embeddings()
-        if n_frozen_layers > 0:
-            self.freeze_layers(n_frozen_layers)
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         x = self.dense(features)
         x = F.relu(x)
@@ -39,14 +33,19 @@ class ClassifierHead(nn.Module):
         x = self.out_proj(x)
         return x
 class BertClassifier(nn.Module):
-    def __init__(self, model_type: str, num_labels: int):
+    def __init__(self, model_type: str, num_labels: int, freeze_layers: int = 0, freeze_embeddings: bool = False):
+    
         super(BertClassifier, self).__init__()
         if model_type not in MODELMAP:
             raise ValueError(f"Model type {model_type} not supported. Choose from {list(MODELMAP.keys())}.")
         
-        self.encoder = AutoModel.from_pretrained(MODELMAP[model_type])
-        self.classifier = ClassifierHead(self.encoder.config, num_labels)
+        self.bert = AutoModel.from_pretrained(MODELMAP[model_type])
+        self.classifier = ClassifierHead(self.bert.config, num_labels)
         self.num_labels = num_labels
+        if freeze_layers > 0:
+            self.freeze_layers(freeze_layers) 
+        if freeze_embeddings:
+            self.freeze_embeddings()
 
     def forward(
         self, 
@@ -55,7 +54,7 @@ class BertClassifier(nn.Module):
         token_type_ids: Optional[torch.Tensor] = None, 
         label_id: Optional[torch.Tensor] = None
     ) -> ModelOutput:
-        encoder_outputs = self.encoder(
+        encoder_outputs = self.bert(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids
@@ -73,26 +72,14 @@ class BertClassifier(nn.Module):
         """
         Freeze the specified number of layers in the encoder.
         """
-        for param in self.encoder.parameters():
-            param.requires_grad = False
-        for layer in self.encoder.encoder.layer[-n_frozen_layers:]:
-            for param in layer.parameters():
+        for i, param in enumerate(self.bert.encoder.layer.parameters()):
+            if i < n_frozen_layers:
+                param.requires_grad = False
+            else:
                 param.requires_grad = True
-    def unfreeze_layers(self):
-        """
-        Unfreeze all layers in the encoder.
-        """
-        for param in self.encoder.parameters():
-            param.requires_grad = True
     def freeze_embeddings(self):
         """
         Freeze the embedding layer.
         """
-        for param in self.encoder.embeddings.parameters():
+        for param in self.bert.embeddings.parameters():
             param.requires_grad = False
-    def unfreeze_embeddings(self):
-        """
-        Unfreeze the embedding layer.
-        """
-        for param in self.encoder.embeddings.parameters():
-            param.requires_grad = True

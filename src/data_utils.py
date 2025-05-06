@@ -1,9 +1,9 @@
 from typing import Literal
-from datasets import load_dataset,disable_caching
+from datasets import load_dataset,enable_caching,disable_caching
 from transformers import AutoTokenizer
 import torch
 
-
+enable_caching()
 FIELDS = [
     "id",
     "question",
@@ -11,7 +11,7 @@ FIELDS = [
     "student_answer",
     "label",
 ]
-LABEL_MAPS = {
+LABEL2ID = {
     "5-ways": {
         "correct": 0,
         "contradictory": 1,
@@ -30,39 +30,45 @@ LABEL_MAPS = {
     },
 }
 
+ID2LABEL = {
+    "5-ways": [k for k, v in LABEL2ID["5-ways"].items()],
+    "3-ways": [k for k, v in LABEL2ID["3-ways"].items()],
+    "2-ways": [k for k, v in LABEL2ID["2-ways"].items()],
+}
+
 class SbankDataset:
-    def __init__(self,test_mode="test_ua",label_mode="3-ways"):
-        self.test = test_mode
+    def __init__(self,label_mode="3-ways"):
         self.label_mode = label_mode  
-        self.ds_original = load_dataset("nkazi/SciEntsBank")  
-        self.train_ds = self.ds_original["train"]
-        self.test_ds = self.ds_original[test_mode]
-        self._format_label(label_format=label_mode)
-        
-    def _format_label(self, label_format: Literal["5-ways", "3-ways", "2-ways"] = "3-ways") -> None:
+        self.data_dict = load_dataset("nkazi/SciEntsBank")  
+        for split in self.data_dict:
+            self.data_dict[split] = self._format_label(self.data_dict[split], label_format=label_mode)
+        self.get_training_split(val_ratio=0.1, seed=42)
+    def _format_label(self,dataset,label_format: Literal["5-ways", "3-ways", "2-ways"] = "3-ways") -> None:
         """
-        Formats the label based on the specified label format.
+        Formats the label based on the specified label format. The label is already in integer. 
+        The function first maps the integer labels to string labels, and then maps them back to integers based on the specified format.
 
         Args:
             label_format (Literal["5-ways", "3-ways", "2-ways"]): The label format, must be one of the allowed values.
         """
-        def map_label(label: str) -> str:
+        dataset = dataset.rename_column("label", "label_id")
+        def map_label(label: int) -> int:
             if label_format == "3-ways":
-                if label in ["partially_correct_incomplete", "irrelevant", "non_domain"]:
-                    return "incorrect"
-                return label
+                if label > 1:
+                    # Map labels 3 ("irrelevant") and 4 ("non_domain") to 2 ("incorrect")
+                    return 2
+                else:
+                    return label
             elif label_format == "2-ways":
-                if label in ["contradictory", "partially_correct_incomplete", "irrelevant", "non_domain"]:
-                    return "incorrect"
-                return "correct"
+                if label > 0:  # Map all labels except 0 ("correct") to 1 ("incorrect")
+                    return 1
+                return 0
             return label  # For "5-ways", no mapping is needed.
+        dataset = dataset.map(lambda x: {"label_id": map_label(x["label_id"])})
+        id2label = ID2LABEL[label_format]
+        dataset = dataset.map(lambda x: {"label": id2label[x["label_id"]]})
+        return dataset
 
-        self.train_ds = self.train_ds.map(
-            lambda example: {"label_id": map_label(example["label"])}
-        )
-        self.test_ds = self.test_ds.map(
-            lambda example: {"label_id": map_label(example["label"])}
-        ) 
     def get_training_split(self, val_ratio=0.1, seed=42):
         """
         Splits the train dataset into train and validation sets.
@@ -75,20 +81,28 @@ class SbankDataset:
             tuple: A tuple containing the train and validation datasets.
         """
  
-        train_val_split = self.train_ds.train_test_split(test_size=val_ratio, seed=seed)
-        self.train_ds = train_val_split["train"]
-        self.val_ds = train_val_split["test"]
-        return {
-            "train": self.train_ds,
-            "val": self.val_ds,
-            "test": self.test_ds,
-        }
+        train_val_split = self.data_dict["train"].train_test_split(
+            test_size=val_ratio,
+            seed=seed,
+            shuffle=True
+        )
+        self.data_dict["train"] = train_val_split["train"]
+        self.data_dict["val"] = train_val_split["test"]
 
 
 class SbankDatasetInstance(SbankDataset):
-    def __init__(self, test="test_ua", format_label="3-ways"):
-        super().__init__(test, format_label)
-        
+    def __init__(self, format_label="3-ways"):
+        super().__init__(format_label)
+
+    def encode_all_splits(self, tokenizer):
+        """
+        Encodes all splits in the data_dict using the provided tokenizer.
+
+        Args:
+            tokenizer: The tokenizer to use for encoding.
+        """
+        for split in self.data_dict:
+            self.data_dict[split] = self.get_encoding(tokenizer, self.data_dict[split])
     @staticmethod
     def get_encoding(tokenizer,dataset):
         def tokenize_function(example, tokenizer):
@@ -133,17 +147,17 @@ class SbankDatasetInstance(SbankDataset):
             
 if __name__ == "__main__":
     tok = AutoTokenizer.from_pretrained("bert-base-uncased")
-    ds = SbankDatasetInstance(test="test_ua", format_label="3-ways")
+    ds = SbankDatasetInstance(format_label="3-ways") 
+
     split = ds.get_training_split(val_ratio=0.1, seed=42)
     tr_ds = ds.get_encoding(tok, split["train"])    
     tr_loader = torch.utils.data.DataLoader(
         tr_ds,
-        batch_size=2,
+        batch_size=16,
         collate_fn=SbankDatasetInstance.collate_fn,
         shuffle=True,
     )
     for batch, meta in tr_loader:
-        print(batch)
-        print(meta)
+        print(batch["label_id"])
+        print(meta["label"])
         break
-    

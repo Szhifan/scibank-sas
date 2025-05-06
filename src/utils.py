@@ -135,11 +135,11 @@ def save_report(metrics, path):
     """
     with open(path, "w") as f:
         json.dump(metrics, f, indent=4) 
-def save_prediction(pred_df, label2id, path):
+def save_prediction(pred_df,id2label, path):
     """
     conver the predictions to the original labels and save them to a CSV file.
     """
-    id2label = {v: k for k, v in label2id.items()}  
-    pred_df["pred_label"] = pred_df["pred_ids"].map(id2label)
+
+    pred_df["pred_label"] = [id2label[pred] for pred in pred_df["pred_id"].values]
     with open(path, "w") as f:
         pred_df.to_csv(f, index=False) 

@@ -23,7 +23,7 @@ from utils import (
     save_report,
     save_prediction
     )
-from sbank_utils import SbankDatasetInstance,LABEL_MAPS
+from data_utils import SbankDatasetInstance,LABEL2ID,ID2LABEL
 from torch.utils.data import DataLoader
 import pandas as pd 
 
@@ -39,16 +39,14 @@ def add_training_args(parser):
     # add experiment arguments 
     parser.add_argument('--model-type', default='bert', type=str, help='model type to use')
     parser.add_argument('--label-mode', default='3-ways', type=str, help='label mode to use')
-    parser.add_argument('--test-mode', default='test_ua', type=str, help='test mode to use')
     # Add optimization arguments
     parser.add_argument('--batch-size', default=32, type=int, help='maximum number of sentences in a batch')
     parser.add_argument('--max-epoch', default=3, type=int, help='force stop training at specified epoch')
-    parser.add_argument('--clip-norm', default=4.0, type=float, help='clip threshold of gradients')
+    parser.add_argument('--clip-norm', default=1, type=float, help='clip threshold of gradients')
     parser.add_argument('--lr', default=5e-5, type=float, help='learning rate')
     parser.add_argument('--lr2', default=3e-5, type=float, help='learning rate for the second optimizer')
     parser.add_argument('--patience', default=3, type=int,
                         help='number of epochs without improvement on validation set before early stopping')
-    parser.add_argument('--warm-up-steps',default=100,type=int)
     parser.add_argument('--weight-decay', default=0.01, type=float, help='weight decay for Adam')
     parser.add_argument('--adam-epsilon', default=1e-8, type=float, help='epsilon for Adam optimizer')
     parser.add_argument('--warmup-proportion', default=0.05, type=float, help='proportion of warmup steps')
@@ -62,6 +60,7 @@ def add_training_args(parser):
     parser.add_argument('--freeze-encoder', action='store_true', help='freeze the encoder')
     parser.add_argument('--test-only', action='store_true', help='test model only')
     parser.add_argument('--fp16', action='store_true', help='use 16-bit float precision instead of 32-bit')
+    parser.add_argument('--log-wandb',action='store_true', help='log experiment to wandb')
 def get_args():
     parser = argparse.ArgumentParser()
     add_training_args(parser)
@@ -134,7 +133,10 @@ def export_cp(model, optimizer, scheduler, args, model_name="model.pt"):
 def load_model(args):
     model = BertClassifier(
         model_type=args.model_type,
-        num_labels=len(LABEL_MAPS[args.label_mode])
+        num_labels=len(LABEL2ID[args.label_mode]),
+        freeze_layers=args.freeze_layers,
+        freeze_embeddings=args.freeze_embeddings,
+        
     )
     checkpoint_path = os.path.join(args.save_dir, "checkpoint", "model.pt")
     if os.path.exists(checkpoint_path):
@@ -154,8 +156,11 @@ def import_cp(args, total_steps):
     if os.path.exists(training_config_path):
         with open(training_config_path, "r") as f:
             training_config = json.load(f)
-        args.__dict__.update(training_config)
-        logger.info("found existing training arguments, overwriting the new one")
+        if training_config["model_type"] != args.model_type:
+            logger.warning("Model type mismatch. Expected %s, but found %s", args.model_type, training_config["model_type"])
+        if training_config["label_mode"] != args.label_mode:
+            logger.warning("Label mode mismatch. Expected %s, but found %s", args.label_mode, training_config["label_mode"])
+        
     model = load_model(args)
     optimizer, scheduler = build_optimizer(model, args,total_steps) 
     return {
@@ -163,13 +168,19 @@ def import_cp(args, total_steps):
         "optimizer": optimizer,
         "scheduler": scheduler
     }
-def train_epoch(model, train_dataset,val_dataset, optimizer, scheduler, args):
+def train_epoch(
+        model,
+        train_dataset,
+        val_dataset,
+        optimizer,
+        scheduler,
+        args): 
     model.zero_grad()
     best_metric = 0 
     loss_history = deque(maxlen=10) 
     acc_history = deque(maxlen=10)
     num_epochs = args.max_epoch + int(args.fp16 and DEFAULT_DEVICE != "cpu")
-
+ 
     train_iterator = trange(num_epochs, position=0, leave=True, desc="Epoch") 
     scaler = GradScaler(enabled=args.fp16 and DEFAULT_DEVICE == "cuda")
     for epoch in train_iterator:
@@ -234,14 +245,14 @@ def train_epoch(model, train_dataset,val_dataset, optimizer, scheduler, args):
             batch_size=args.batch_size,
             is_test=False,
         )
-        eval_metrics = eval_report(val_predictions, label2id=LABEL_MAPS[args.label_mode])
+        eval_metrics = eval_report(val_predictions, label2id=LABEL2ID[args.label_mode])
         eval_f1 = eval_metrics["overall_f1"]
         eval_acc = eval_metrics["overall_acc"]
         if eval_f1 > best_metric:
             best_metric = eval_f1
-            if not args.no_save:
-                export_cp(model, optimizer, scheduler, args, model_name="model.pt")
-                logger.info("Best model saved at epoch %d", epoch)
+       
+            export_cp(model, optimizer, scheduler, args, model_name="model.pt")
+            logger.info("Best model saved at epoch %d", epoch)
         logger.info("Epoch %d: Validation loss: %.4f, F1: %.4f, Accuracy: %.4f", epoch, val_loss, eval_f1, eval_acc)
         wandb.log({
             "eval": {
@@ -250,10 +261,6 @@ def train_epoch(model, train_dataset,val_dataset, optimizer, scheduler, args):
                 "accuracy": eval_acc
             }
         })
-        save_report(
-            eval_metrics,
-            os.path.join(args.save_dir, "val_results.json"),
-        )
         
 @torch.no_grad() 
 def evaluate(
@@ -285,6 +292,7 @@ def evaluate(
         pred_id = np.argmax(logits, axis=1)
         # collect data to put in the prediction dict
         predictions["pred_id"].extend(pred_id)
+        predictions["label_id"].extend(batch["label_id"].detach().cpu().numpy())
         for key, value in meta.items():
             predictions[key].extend(value)
     pred_df = pd.DataFrame(predictions)
@@ -293,6 +301,7 @@ def evaluate(
 
 
 def main(args):
+   
     if args.freeze_encoder:
         args.freeze_layers = 8964
     set_seed()
@@ -300,16 +309,21 @@ def main(args):
         os.makedirs(args.save_dir)
     configure_logging(filename=os.path.join(args.save_dir, "train.log"))
     wandb.login()
-    wandb.init(project="sb-baseline", config=vars(args))
+    if args.log_wandb:
+        wandb.init(
+            project="sb-baseline",
+            config=vars(args),
+            name=f"{args.model_type}_{args.label_mode}",
+            dir=args.save_dir,
+        )
+    else:
+        wandb.init(mode="disabled")
     logger.info("Training arguments: %s", args)
     # Load the dataset
-    tok = get_tokenizer(args.model_type)
-    dataset = SbankDatasetInstance()
-    split = dataset.get_training_split(val_ratio=0.1, seed=42)
-    train_dataset = SbankDatasetInstance.get_encoding(tok, split["train"])
-    val_dataset = SbankDatasetInstance.get_encoding(tok, split["val"])
-    test_dataset = SbankDatasetInstance.get_encoding(tok, split["test"])
-    steps_per_epoch = int(np.ceil(len(train_dataset) / args.batch_size)) 
+    sbank = SbankDatasetInstance(format_label=args.label_mode)
+    sbank.encode_all_splits(get_tokenizer(args.model_type))
+    sb_dict = sbank.data_dict
+    steps_per_epoch = int(np.ceil(len(sb_dict["train"]) / args.batch_size)) 
     total_steps = args.max_epoch * steps_per_epoch
 
 
@@ -320,8 +334,6 @@ def main(args):
     optimizer = cp["optimizer"]
     scheduler = cp["scheduler"]
 
-
-
     if not args.test_only:
         model.train()
         wandb.watch(model)
@@ -329,47 +341,65 @@ def main(args):
 
         # Training loop
         logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", len(train_dataset))
+        logger.info("Num examples = %d", len(sb_dict["train"]))
         logger.info("  Num Epochs = %d", args.max_epoch)
         logger.info("  Instantaneous batch size per GPU = %d", args.batch_size)
         train_stats = train_epoch(
             model,
-            train_dataset,
-            val_dataset,
+            sb_dict["train"],
+            sb_dict["val"],
             optimizer,
             scheduler,
-            args
-        )
+            args)  
+        
+
+
+
+
         logger.info("***** Training finished *****")
     # Evaluate on test dataset
-    logger.info("***** Running evaluation on test set *****")
-    logger.info("  Num examples = %d", len(test_dataset))
-    test_predictions, test_loss = evaluate(
-        model,
-        test_dataset,
-        batch_size=args.batch_size,
-        is_test=True,
-    )
-    test_metrics = eval_report(test_predictions, label2id=LABEL_MAPS[args.label_mode])
-    test_f1 = test_metrics["overall_f1"]
-    test_acc = test_metrics["overall_acc"]
-    logger.info("Test set results: Loss: %.4f, F1: %.4f, Accuracy: %.4f", test_loss, test_f1, test_acc)
-    save_report(
-        test_metrics,
-        os.path.join(args.save_dir, "test_results.json"),
-    )
-    save_prediction(
-        test_predictions,
-        os.path.join(args.save_dir, "test_predictions.csv"),
-    )
-    wandb.log({
-        "test": {
-            "loss": test_loss,
-            "f1": test_f1,
-            "accuracy": test_acc
-        }
-    })
     
+
+    for test_split in ["test_ua", "test_uq", "test_ud"]:
+        test_dataset = sb_dict[test_split]
+        logger.info(f"***** Running evaluation on {test_split} set *****")
+        logger.info("  Num examples = %d", len(test_dataset))
+        test_predictions, test_loss = evaluate(
+            model,
+            test_dataset,
+            batch_size=args.batch_size,
+            is_test=True,
+        )
+        
+        test_metrics = eval_report(test_predictions, label2id=LABEL2ID[args.label_mode])
+        wandb.log({
+            f"{test_split}_eval": {
+                "loss": test_loss,
+                "f1": test_metrics["overall_f1"],
+                "accuracy": test_metrics["overall_acc"],
+            }
+        })
+        save_report(
+            test_metrics,
+            os.path.join(args.save_dir, f"{test_split}_results.json"),
+        )
+        # save_prediction(
+        #     test_predictions,
+        #     ID2LABEL[args.label_mode],
+        #     os.path.join(args.save_dir, f"{test_split}_predictions.csv")
+        # )
+    if args.no_save:
+        logger.info("No-save flag is set. Deleting checkpoint.")
+        checkpoint_dir = os.path.join(args.save_dir, "checkpoint")
+        if os.path.exists(checkpoint_dir):
+            for file in os.listdir(checkpoint_dir):
+                file_path = os.path.join(checkpoint_dir, file)
+                try:
+                    if file_path.endswith(".pt") and os.path.isfile(file_path):
+                        os.remove(file_path)
+                except Exception as e:
+                    logger.error("Error deleting file %s: %s", file_path, e)
+     
 if __name__ == "__main__":
     args = get_args()
     # Set up logging
