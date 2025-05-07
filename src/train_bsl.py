@@ -279,16 +279,14 @@ def evaluate(
 
  
     model.eval()
-    eval_loss = 0
-    last_step = 1 
+    eval_loss = []
     predictions = defaultdict(list)
     for step, (batch, meta) in enumerate(data_iterator):
         batch = batch_to_device(batch, DEFAULT_DEVICE)
         model_output = model(**batch)
         loss = model_output.loss
         logits = model_output.logits.detach().cpu().numpy()
-        eval_loss += loss.item()
-
+        eval_loss.append(loss.item())
         pred_id = np.argmax(logits, axis=1)
         # collect data to put in the prediction dict
         predictions["pred_id"].extend(pred_id)
@@ -296,7 +294,8 @@ def evaluate(
         for key, value in meta.items():
             predictions[key].extend(value)
     pred_df = pd.DataFrame(predictions)
-    return pred_df, eval_loss / last_step 
+    eval_loss = np.mean(eval_loss)
+    return pred_df, eval_loss 
     
 
 
