@@ -23,7 +23,7 @@ from utils import (
     save_report,
     save_prediction
     )
-from data_utils import SbankDatasetInstance,LABEL2ID,ID2LABEL
+from data_utils import SbankDatasetBsl,LABEL2ID,ID2LABEL
 from torch.utils.data import DataLoader
 import pandas as pd 
 
@@ -39,6 +39,8 @@ def add_training_args(parser):
     # add experiment arguments 
     parser.add_argument('--model-type', default='bert', type=str, help='model type to use')
     parser.add_argument('--label-mode', default='3-ways', type=str, help='label mode to use')
+    parser.add_argument('--seed', default=42, type=int, help='random seed for initialization')
+    parser.add_argument('--input-field', default='ref+ans', choices=['ref+ans', 'ans', 'q+ans'], type=str, help='input field to use')
     # Add optimization arguments
     parser.add_argument('--batch-size', default=32, type=int, help='maximum number of sentences in a batch')
     parser.add_argument('--max-epoch', default=3, type=int, help='force stop training at specified epoch')
@@ -189,7 +191,7 @@ def train_epoch(
             num_workers=0,
             pin_memory=True,
             batch_size=args.batch_size, 
-            collate_fn=SbankDatasetInstance.collate_fn,
+            collate_fn=SbankDatasetBsl.collate_fn,
             shuffle=True) 
         epoch_iterator = tqdm(
             train_dataloader, 
@@ -272,7 +274,7 @@ def evaluate(
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        collate_fn=SbankDatasetInstance.collate_fn,
+        collate_fn=SbankDatasetBsl.collate_fn,
         shuffle=False) 
     
     data_iterator = tqdm(dataloader, desc="Evaluating", position=0 if is_test else 2, leave=True)
@@ -303,7 +305,7 @@ def main(args):
    
     if args.freeze_encoder:
         args.freeze_layers = 8964
-    set_seed()
+    set_seed(args.seed)
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
     configure_logging(filename=os.path.join(args.save_dir, "train.log"))
@@ -319,7 +321,7 @@ def main(args):
         wandb.init(mode="disabled")
     logger.info("Training arguments: %s", args)
     # Load the dataset
-    sbank = SbankDatasetInstance(format_label=args.label_mode)
+    sbank = SbankDatasetBsl(format_label=args.label_mode)
     sbank.encode_all_splits(get_tokenizer(args.model_type))
     sb_dict = sbank.data_dict
     steps_per_epoch = int(np.ceil(len(sb_dict["train"]) / args.batch_size)) 

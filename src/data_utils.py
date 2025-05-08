@@ -90,9 +90,10 @@ class SbankDataset:
         self.data_dict["val"] = train_val_split["test"]
 
 
-class SbankDatasetInstance(SbankDataset):
-    def __init__(self, format_label="3-ways"):
+class SbankDatasetBsl(SbankDataset):
+    def __init__(self, format_label="3-ways",input_field="ref+ans"):
         super().__init__(format_label)
+        self.input_field = input_field
 
     def encode_all_splits(self, tokenizer):
         """
@@ -102,22 +103,34 @@ class SbankDatasetInstance(SbankDataset):
             tokenizer: The tokenizer to use for encoding.
         """
         for split in self.data_dict:
-            self.data_dict[split] = self.get_encoding(tokenizer, self.data_dict[split])
+            self.data_dict[split] = self.get_encoding(tokenizer, self.data_dict[split],self.input_field)
     @staticmethod
-    def get_encoding(tokenizer,dataset):
-        def tokenize_function(example, tokenizer):
-            encoding = tokenizer(
-                example["reference_answer"],
-                example["student_answer"],
-                truncation=True,
-            ) 
+    def get_encoding(tokenizer,dataset,input_field="ref+ans"):
+        def tokenize_function(example, tokenizer,input_field):
+            if input_field == "ref+ans":
+                encoding = tokenizer(
+                    example["reference_answer"],
+                    example["student_answer"],
+                    truncation=True,
+                ) 
+            elif input_field == "ans":
+                encoding = tokenizer(
+                    example["student_answer"],
+                    truncation=True,
+                )
+            elif input_field == "q+ans":
+                encoding = tokenizer(
+                    example["question"],
+                    example["student_answer"],
+                    truncation=True,
+                )
             example["input_ids"] = encoding["input_ids"]
             example["attention_mask"] = encoding["attention_mask"]
             if "token_type_ids" in encoding:
                 example["token_type_ids"] = encoding["token_type_ids"]
             return example 
         return dataset.map(
-            lambda example: tokenize_function(example, tokenizer)
+            lambda example: tokenize_function(example, tokenizer,input_field),
         )
     @staticmethod
     def collate_fn(input_batch):
@@ -147,17 +160,16 @@ class SbankDatasetInstance(SbankDataset):
             
 if __name__ == "__main__":
     tok = AutoTokenizer.from_pretrained("bert-base-uncased")
-    ds = SbankDatasetInstance(format_label="3-ways") 
-
-    split = ds.get_training_split(val_ratio=0.1, seed=42)
-    tr_ds = ds.get_encoding(tok, split["train"])    
-    tr_loader = torch.utils.data.DataLoader(
-        tr_ds,
-        batch_size=16,
-        collate_fn=SbankDatasetInstance.collate_fn,
+    ds = SbankDatasetBsl(format_label="3-ways",input_field="ans") 
+    ds.encode_all_splits(tok)
+    train_dataset = ds.data_dict["train"]
+    loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=2,
+        collate_fn=ds.collate_fn,
         shuffle=True,
     )
-    for batch, meta in tr_loader:
-        print(batch["label_id"])
-        print(meta["label"])
+    for batch, meta in loader:
+        print(batch)
+        print(meta)
         break
