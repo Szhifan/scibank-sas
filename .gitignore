@@ -1,0 +1,4 @@
+results/* 
+wandb/*
+pat.txt
+credentials_openai.txt
