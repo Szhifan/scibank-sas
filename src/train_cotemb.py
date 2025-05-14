@@ -320,7 +320,7 @@ def main(args):
         wandb.init(mode="disabled")
     logger.info("Training arguments: %s", args)
     # Load the dataset
-    sbank = SB_DATASET_CoTemb(lavel_mode=args.label_mode)
+    sbank = SB_DATASET_CoTemb(label_mode=args.label_mode)
 
     sbank.encode_all_splits(get_tokenizer(args.model_type))
     sb_dict = sbank.data_dict
