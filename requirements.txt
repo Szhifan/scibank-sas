@@ -1,0 +1,7 @@
+torch 
+transformers
+datasets
+nltk
+tqdm 
+wandb
+scikit-learn
