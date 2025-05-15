@@ -9,7 +9,7 @@ from torch.amp import GradScaler, autocast
 import logging
 import numpy as np
 from collections import deque, defaultdict
-from models import BertClassifier, get_tokenizer
+from models import ASAG_CrossEncoder, get_tokenizer
 from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
 from tqdm import tqdm, trange
@@ -23,7 +23,7 @@ from utils import (
     save_report,
     save_prediction
     )
-from data_utils import LABEL2ID,ID2LABEL,SB_DATASET_CoTemb,SB_Dataset
+from data_utils import LABEL2ID,ID2LABEL,SB_Dataset_CoTemb,SB_Dataset
 from torch.utils.data import DataLoader
 import pandas as pd 
 
@@ -132,7 +132,7 @@ def export_cp(model, optimizer, scheduler, args, model_name="model.pt"):
     logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
 def load_model(args):
-    model = BertClassifier(
+    model = ASAG_CrossEncoder(
         model_type=args.model_type,
         num_labels=len(LABEL2ID[args.label_mode]),
         freeze_layers=args.freeze_layers,
@@ -320,7 +320,7 @@ def main(args):
         wandb.init(mode="disabled")
     logger.info("Training arguments: %s", args)
     # Load the dataset
-    sbank = SB_DATASET_CoTemb(label_mode=args.label_mode)
+    sbank = SB_Dataset_CoTemb(label_mode=args.label_mode)
 
     sbank.encode_all_splits(get_tokenizer(args.model_type))
     sb_dict = sbank.data_dict

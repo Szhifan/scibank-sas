@@ -162,7 +162,7 @@ class SB_Dataset_BSL(SB_Dataset):
         )
 
     
-class SB_DATASET_CoTemb(SB_Dataset):
+class SB_Dataset_CoTemb(SB_Dataset):
     def __init__(self, label_mode="3-ways"):
         super().__init__(label_mode)
         self.merge_cot()
@@ -222,9 +222,22 @@ class SB_DATASET_CoTemb(SB_Dataset):
         for split in self.data_dict:
             self.data_dict[split] = self.get_encoding(tokenizer, self.data_dict[split])
 
+class SB_Dataset_Contrastive(SB_Dataset):
+    def __init__(self, label_mode="3-ways"):
+        super().__init__(label_mode)
+    
+    def _get_qid(self):
+        def help(id):
+            qid = ".".join(id.split(".")[:2])
+            return qid 
+        for split in self.data_dict:
+            self.data_dict[split] = self.data_dict[split].map(
+                lambda x: {"qid": help(x["id"])}
+            )
+    
 
 if __name__ == "__main__":
-    tok = AutoTokenizer.from_pretrained("bert-base-uncased")
-    ds = SB_DATASET_CoTemb(label_mode="3-ways") 
-    for i in range(5):  # Print the first 5 entries in the train set
-        print(ds.data_dict["train"][i])
+
+    ds = SB_Dataset_Contrastive()
+    ds._get_qid()
+    print(ds.data_dict["train"][0]["qid"])

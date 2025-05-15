@@ -1,24 +1,13 @@
-from data_utils import SB_Dataset
-import json
-import os
-sb = SB_Dataset()
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoModel
+import torch
 
+model = AutoModel.from_pretrained('cross-encoder/nli-deberta-v3-large')
+tokenizer = AutoTokenizer.from_pretrained('cross-encoder/nli-deberta-v3-large')
 
-output_path = "data/merged_responses.json"
-new_data = {}
+features = tokenizer(['How many people live in Berlin?', 'How many people live in Berlin?'], ['Berlin has a population of 3,520,031 registered inhabitants in an area of 891.82 square kilometers.', 'New York City is famous for the Metropolitan Museum of Art.'],  padding=True, truncation=True, return_tensors="pt")
 
-# Iterate through all files in the directory
-directory = "data"
-for filename in os.listdir(directory):
-    if filename.endswith(".jsonl"):
-        file_path = os.path.join(directory, filename)
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-            for i, item in enumerate(lines):
-                item = json.loads(item)
-                id = list(item.keys())[0]
-                new_data[id] = item[id]
+model.eval()
 
-# Write all merged data to the output file
-with open(output_path, "w") as f:
-    json.dump(new_data, f, indent=4)
+with torch.no_grad():
+    model_output = model(**features)
+print(model_output)

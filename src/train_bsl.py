@@ -9,7 +9,7 @@ from torch.amp import GradScaler, autocast
 import logging
 import numpy as np
 from collections import deque, defaultdict
-from models import BertClassifier, get_tokenizer
+from models import ASAG_CrossEncoder, get_tokenizer
 from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
 from tqdm import tqdm, trange
@@ -133,7 +133,7 @@ def export_cp(model, optimizer, scheduler, args, model_name="model.pt"):
     logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
 def load_model(args):
-    model = BertClassifier(
+    model = ASAG_CrossEncoder(
         model_type=args.model_type,
         num_labels=len(LABEL2ID[args.label_mode]),
         freeze_layers=args.freeze_layers,
@@ -321,7 +321,7 @@ def main(args):
         wandb.init(mode="disabled")
     logger.info("Training arguments: %s", args)
     # Load the dataset
-    sbank = SB_Dataset_BSL(format_label=args.label_mode)
+    sbank = SB_Dataset_BSL(label_mode=args.label_mode)
     sbank.encode_all_splits(get_tokenizer(args.model_type))
     sb_dict = sbank.data_dict
     steps_per_epoch = int(np.ceil(len(sb_dict["train"]) / args.batch_size)) 

@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 MODELMAP = {
     "roberta": "roberta-base",
-    "bert": "bert-base-uncased"
+    "bert": "bert-base-uncased",
+    "ms-marco-12":"cross-encoder/ms-marco-MiniLM-L12-v2",
+    "ms-marco-6":"cross-encoder/ms-marco-MiniLM-L6-v2",
+    "nli-deberta-v3-large": "cross-encoder/nli-deberta-v3-large",
 }
 def get_tokenizer(model_type: str) -> AutoTokenizer:
     if model_type not in MODELMAP:
@@ -32,10 +35,10 @@ class ClassifierHead(nn.Module):
         x = self.dropout(x)
         x = self.out_proj(x)
         return x
-class BertClassifier(nn.Module):
+class ASAG_CrossEncoder(nn.Module):
     def __init__(self, model_type: str, num_labels: int, freeze_layers: int = 0, freeze_embeddings: bool = False):
     
-        super(BertClassifier, self).__init__()
+        super(ASAG_CrossEncoder, self).__init__()
         if model_type not in MODELMAP:
             raise ValueError(f"Model type {model_type} not supported. Choose from {list(MODELMAP.keys())}.")
         
@@ -83,3 +86,11 @@ class BertClassifier(nn.Module):
         """
         for param in self.bert.embeddings.parameters():
             param.requires_grad = False
+
+    
+if __name__ == "__main__":
+    model = ASAG_CrossEncoder(model_type="ms-marco-12", num_labels=3, freeze_layers=0, freeze_embeddings=False)
+    tok = get_tokenizer("ms-marco-12")
+    inputs = tok("This is a test sentence.","nimadabi", return_tensors="pt")
+    outputs = model(**inputs)
+    print(outputs)
