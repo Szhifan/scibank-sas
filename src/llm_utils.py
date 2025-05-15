@@ -3,6 +3,7 @@ from langchain_openai import OpenAI
 import os
 from nltk.tokenize import word_tokenize
 import nltk
+from data_utils import SB_Dataset
 path_cred = "credentials_openai.txt"
 with open(path_cred, "r") as file:
     lines = file.readlines()
@@ -30,40 +31,6 @@ def get_scibank_prompt(question, student_answer, reference_answer):
         student_answer=student_answer,
         reference_answer=reference_answer
     )
-def get_scibank_response(question, student_answer, reference_answer,llm):
-    prompt = get_scibank_prompt(
-        question=question,
-        student_answer=student_answer,
-        reference_answer=reference_answer
-    )
-    response = llm.invoke(prompt)
-    return response
-if __name__ == "__main__": 
-    from data_utils import SB_Dataset
-    import json
-    import tqdm 
-    dataset = SB_Dataset()
-    split = dataset.data_dict["val"]
-    output_file = "data/responses_val.jsonl"
-    split = [item for item in split]
-    try:
-        with open(output_file, "r") as f:
-            start = len(f.readlines())
-    except FileNotFoundError:
-        start = 0  # If the file doesn't exist, start from the beginning
 
-    with open(output_file, "a") as outfile:  # Open in append mode to continue from the latest
-        for idx, item in enumerate(tqdm.tqdm(split[start:], initial=start, total=len(split))):
-            try:
-                question = item["question"]
-                student_answer = item["student_answer"]
-                reference_answer = item["reference_answer"]
-                response = get_scibank_response(question, student_answer, reference_answer, llm)
-                id = item["id"]
-                json.dump({id:{"gpt3.5_response": response}}, outfile)
-                outfile.write("\n")
-            except Exception as e:
-                print(f"An error occurred at index {start + idx}: {e}")
-                print("Saving progress and exiting...")
-                outfile.flush()
-                break
+if __name__ == "__main__": 
+    pass 

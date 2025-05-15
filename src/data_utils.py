@@ -1,9 +1,9 @@
 from typing import Literal
-from datasets import load_dataset,enable_caching,disable_caching
+from datasets import load_dataset,enable_caching,Dataset
 from transformers import AutoTokenizer
 import torch
 import json
-
+import tqdm 
 
 
 enable_caching()
@@ -38,7 +38,34 @@ ID2LABEL = {
     "3-ways": [k for k, v in LABEL2ID["3-ways"].items()],
     "2-ways": [k for k, v in LABEL2ID["2-ways"].items()],
 }
-
+def get_contrastive(dataset):
+    """
+    Generates contrastive pairs for each question ID in the dataset.
+    Returns:
+        A dictionary where keys are question IDs and values are lists of corresponding student answers.
+    """ 
+    dataset_contrastive = []
+    dataset_df = dataset.to_pandas()
+    dataset_gp_qid = dataset_df.groupby("qid")
+    for qid, group in dataset_gp_qid:
+        group = group.to_dict(orient="records")
+        for i in tqdm.tqdm(range(len(group))):
+            for j in range(i + 1, len(group)):
+                if group[i]["qid"] == group[j]["qid"]:
+                    pair = {
+                        "qid": group[i]["qid"],
+                        "student_answer_1": group[i]["student_answer"],
+                        "student_answer_2": group[j]["student_answer"],
+                        "label_id_1": group[i]["label_id"],
+                        "label_id_2": group[j]["label_id"],
+                        "label_contrastive": 1 if group[i]["label_id"] == group[j]["label_id"] else 0,
+                        "id_1": group[i]["id"],
+                        "id_2": group[j]["id"],
+                        "question": group[i]["question"],
+                        "reference_answer": group[i]["reference_answer"],
+                    }
+                    dataset_contrastive.append(pair)
+    return dataset_contrastive
 class SB_Dataset:
     def __init__(self,label_mode="3-ways"):
         self.label_mode = label_mode  
@@ -161,83 +188,96 @@ class SB_Dataset_BSL(SB_Dataset):
             lambda example: tokenize_function(example, tokenizer,input_field),
         )
 
-    
-class SB_Dataset_CoTemb(SB_Dataset):
+
+class SB_Dataset_SentenceEmbeddings(SB_Dataset):
     def __init__(self, label_mode="3-ways"):
         super().__init__(label_mode)
-        self.merge_cot()
         self.get_training_split()
-
-    def merge_cot(self):
-        """
-        Merges the CoT data with the original dataset.
-
-        Args:
-            dataset: The original dataset.
-            path_cot: The path to the CoT data file.
-
-        Returns:
-            The merged dataset.
-        """
-        path_cot = "data/merged_responses.json"
-        with open(path_cot, "r") as f:
-            res_dict = json.load(f)
-        for split in self.data_dict:
-            self.data_dict[split] = self.data_dict[split].map(
-                lambda x: {
-                    "llm_response": res_dict[x["id"]]["gpt3.5_response"]})
     
-    @staticmethod
-    def get_encoding(tokenizer, dataset):
-        """
-        Encodes the dataset using the provided tokenizer.
-
-        Args:
-            tokenizer: The tokenizer to use for encoding.
-            dataset: The dataset to encode.
-
-        Returns:
-            The encoded dataset.
-        """
-        def tokenize_function(example, tokenizer):
-            encoding = tokenizer(
-                example["llm_response"],
-                example["student_answer"],
-                truncation=True,
-            )
-            example["input_ids"] = encoding["input_ids"]
-            example["attention_mask"] = encoding["attention_mask"]
-            if "token_type_ids" in encoding:
-                example["token_type_ids"] = encoding["token_type_ids"]
-            return example
-        return dataset.map(
-            lambda example: tokenize_function(example, tokenizer),
-        )
+    # def get_qid(self):
+    #     def help(id):
+    #         qid = ".".join(id.split(".")[:2])
+    #         return qid 
+    #     for split in self.data_dict:
+    #         self.data_dict[split] = self.data_dict[split].map(
+    #             lambda x: {"qid": help(x["id"])}
+    #         )
+    
     def encode_all_splits(self, tokenizer):
         """
         Encodes all splits in the data_dict using the provided tokenizer.
+        Encodes reference answer and student answer separately.
+
         Args:
             tokenizer: The tokenizer to use for encoding.
         """
         for split in self.data_dict:
             self.data_dict[split] = self.get_encoding(tokenizer, self.data_dict[split])
-
-class SB_Dataset_Contrastive(SB_Dataset):
-    def __init__(self, label_mode="3-ways"):
-        super().__init__(label_mode)
     
-    def _get_qid(self):
-        def help(id):
-            qid = ".".join(id.split(".")[:2])
-            return qid 
-        for split in self.data_dict:
-            self.data_dict[split] = self.data_dict[split].map(
-                lambda x: {"qid": help(x["id"])}
+    @staticmethod
+    def get_encoding(tokenizer, dataset):
+        def tokenize_function(example, tokenizer):
+            # Encode reference answer and student answer separately
+            ref_encoding = tokenizer(
+                example["reference_answer"],
+                truncation=True,
             )
-    
+            student_encoding = tokenizer(
+                example["student_answer"],
+                truncation=True,
+            )
+            
+            example["input_ids_1"] = ref_encoding["input_ids"]
+            example["attention_mask_1"] = ref_encoding["attention_mask"]
+            example["input_ids_2"] = student_encoding["input_ids"]
+            example["attention_mask_2"] = student_encoding["attention_mask"]
+            
+            if "token_type_ids" in ref_encoding:
+                example["token_type_ids_1"] = ref_encoding["token_type_ids"]
+                example["token_type_ids_2"] = student_encoding["token_type_ids"]
+            
+            return example
+        
+        return dataset.map(
+            lambda example: tokenize_function(example, tokenizer),
+        )
 
+
+    @staticmethod 
+    def collate_fn(input_batch):
+        input_ids_1 = torch.nn.utils.rnn.pad_sequence([torch.tensor(x["input_ids_1"]) for x in input_batch], batch_first=True)
+        attention_mask_1 = torch.nn.utils.rnn.pad_sequence([torch.tensor(x["attention_mask_1"]) for x in input_batch], batch_first=True)
+        input_ids_2 = torch.nn.utils.rnn.pad_sequence([torch.tensor(x["input_ids_2"]) for x in input_batch], batch_first=True)
+        attention_mask_2 = torch.nn.utils.rnn.pad_sequence([torch.tensor(x["attention_mask_2"]) for x in input_batch], batch_first=True)
+        
+        if "token_type_ids_1" in input_batch[0]:
+            token_type_ids_1 = torch.nn.utils.rnn.pad_sequence([torch.tensor(x["token_type_ids_1"]) for x in input_batch], batch_first=True)
+            token_type_ids_2 = torch.nn.utils.rnn.pad_sequence([torch.tensor(x["token_type_ids_2"]) for x in input_batch], batch_first=True)
+        else:
+            token_type_ids_1 = None
+            token_type_ids_2 = None
+        
+        batch = {
+            "input_ids_1": input_ids_1,
+            "attention_mask_1": attention_mask_1,
+            "input_ids_2": input_ids_2,
+            "attention_mask_2": attention_mask_2,
+            "token_type_ids_1": token_type_ids_1,
+            "token_type_ids_2": token_type_ids_2,
+            "label_id": torch.tensor([x["label_id"] for x in input_batch]),
+        }
+        
+        meta = {
+            "id": [x["id"] for x in input_batch],
+            "question": [x["question"] for x in input_batch],
+            "reference_answer": [x["reference_answer"] for x in input_batch],
+            "student_answer": [x["student_answer"] for x in input_batch],
+            "label": [x["label"] for x in input_batch],
+        }
+        return batch, meta
 if __name__ == "__main__":
 
-    ds = SB_Dataset_Contrastive()
-    ds._get_qid()
-    print(ds.data_dict["train"][0]["qid"])
+    ds = SB_Dataset_SentenceEmbeddings(label_mode="3-ways")
+    
+
+    

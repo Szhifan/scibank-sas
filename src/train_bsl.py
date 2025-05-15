@@ -37,7 +37,7 @@ def add_training_args(parser):
     add training related args 
     """ 
     # add experiment arguments 
-    parser.add_argument('--model-type', default='bert', type=str, help='model type to use')
+    parser.add_argument('--model-name', default='bert-base-uncased', type=str, help='model type to use')
     parser.add_argument('--label-mode', default='3-ways', type=str, help='label mode to use')
     parser.add_argument('--seed', default=42, type=int, help='random seed for initialization')
     parser.add_argument('--input-field', default='ref+ans', choices=['ref+ans', 'ans', 'q+ans'], type=str, help='input field to use')
@@ -75,18 +75,18 @@ def build_optimizer(model, args,total_steps):
     optimizer_grouped_parameters = [
         {
             "params": [
-                p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and "classifier_heads" not in n
+                p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and "classifier" not in n
             ],
             "weight_decay": args.weight_decay,
             "lr": args.lr,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and "classifier_heads" not in n],
+            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and "classifier" not in n],
             "weight_decay": 0.0,
             "lr": args.lr,
         },
         {
-            "params": [p for n, p in model. named_parameters() if "classifier_heads" in n],
+            "params": [p for n, p in model. named_parameters() if "classifier" in n],
             "weight_decay": args.weight_decay,
             "lr": args.lr2,
         },
@@ -134,7 +134,7 @@ def export_cp(model, optimizer, scheduler, args, model_name="model.pt"):
 
 def load_model(args):
     model = ASAG_CrossEncoder(
-        model_type=args.model_type,
+        model_name=args.model_name,
         num_labels=len(LABEL2ID[args.label_mode]),
         freeze_layers=args.freeze_layers,
         freeze_embeddings=args.freeze_embeddings,
@@ -158,8 +158,8 @@ def import_cp(args, total_steps):
     if os.path.exists(training_config_path):
         with open(training_config_path, "r") as f:
             training_config = json.load(f)
-        if training_config["model_type"] != args.model_type:
-            logger.warning("Model type mismatch. Expected %s, but found %s", args.model_type, training_config["model_type"])
+        if training_config["model_name"] != args.model_name:
+            logger.warning("Model type mismatch. Expected %s, but found %s", args.model_name, training_config["model_name"])
         if training_config["label_mode"] != args.label_mode:
             logger.warning("Label mode mismatch. Expected %s, but found %s", args.label_mode, training_config["label_mode"])
         
@@ -314,7 +314,7 @@ def main(args):
         wandb.init(
             project="sb-baseline",
             config=vars(args),
-            name=f"{args.model_type}_{args.label_mode}",
+            name=f"{args.model_name}_{args.label_mode}",
             dir=args.save_dir,
         )
     else:
@@ -322,7 +322,7 @@ def main(args):
     logger.info("Training arguments: %s", args)
     # Load the dataset
     sbank = SB_Dataset_BSL(label_mode=args.label_mode)
-    sbank.encode_all_splits(get_tokenizer(args.model_type))
+    sbank.encode_all_splits(get_tokenizer(args.model_name))
     sb_dict = sbank.data_dict
     steps_per_epoch = int(np.ceil(len(sb_dict["train"]) / args.batch_size)) 
     total_steps = args.max_epoch * steps_per_epoch
