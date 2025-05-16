@@ -4,7 +4,46 @@ from transformers import AutoTokenizer
 import torch
 import json
 import tqdm 
+    
+def get_qid(dataset: Dataset):
+    def help(id):
+        qid = ".".join(id.split(".")[:2])
+        return qid 
 
+    dataset = dataset.map(
+            lambda x: {"qid": help(x["id"])}) 
+    return dataset
+
+def get_contrastive(dataset):
+    """
+    Generates contrastive pairs for each question ID in the dataset.
+    Returns:
+        A dictionary where keys are question IDs and values are lists of corresponding student answers.
+    """ 
+    dataset = get_qid(dataset)
+    dataset_contrastive = []
+    dataset_df = dataset.to_pandas()
+    
+    dataset_gp_qid = dataset_df.groupby("qid")
+    for qid, group in dataset_gp_qid:
+        group = group.to_dict(orient="records")
+        for i in tqdm.tqdm(range(len(group))):
+            for j in range(i + 1, len(group)):
+                if group[i]["qid"] == group[j]["qid"]:
+                    pair = {
+                        "qid": group[i]["qid"],
+                        "student_answer_1": group[i]["student_answer"],
+                        "student_answer_2": group[j]["student_answer"],
+                        "label_id_1": group[i]["label_id"],
+                        "label_id_2": group[j]["label_id"],
+                        "label_contrastive": 1 if group[i]["label_id"] == group[j]["label_id"] else 0,
+                        "id_1": group[i]["id"],
+                        "id_2": group[j]["id"],
+                        "question": group[i]["question"],
+                        "reference_answer": group[i]["reference_answer"],
+                    }
+                    dataset_contrastive.append(pair)
+    return dataset_contrastive
 
 enable_caching()
 FIELDS = [
@@ -166,15 +205,7 @@ class SB_Dataset_SentenceEmbeddings(SB_Dataset):
     def __init__(self, label_mode="3-ways"):
         super().__init__(label_mode)
         self.get_training_split()
-    
-    def get_qid(self):
-        def help(id):
-            qid = ".".join(id.split(".")[:2])
-            return qid 
-        for split in self.data_dict:
-            self.data_dict[split] = self.data_dict[split].map(
-                lambda x: {"qid": help(x["id"])}
-            )
+
     
     def encode_all_splits(self, tokenizer):
         """
@@ -250,7 +281,11 @@ class SB_Dataset_SentenceEmbeddings(SB_Dataset):
         return batch, meta
 if __name__ == "__main__":
 
-    ds = SB_Dataset_SentenceEmbeddings(label_mode="3-ways")
+    ds = SB_Dataset("2-ways")
+    train_ds = ds.data_dict["train"]
+    train_contrastive = get_contrastive(train_ds)
+    with open("data/contrastive_train_2ways.json", "w") as f:
+        json.dump(train_contrastive, f, indent=4)
     
 
     

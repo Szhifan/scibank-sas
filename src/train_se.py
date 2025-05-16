@@ -331,7 +331,7 @@ def main(args):
     wandb.login()
     if args.log_wandb:
         wandb.init(
-            project="sb-baseline",
+            project="sb-se",
             config=vars(args),
             name=f"{args.model_name}_{args.label_mode}",
             dir=args.save_dir,
