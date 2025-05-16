@@ -1,33 +1,25 @@
-from transformers import AutoTokenizer, AutoModel
-from sentence_transformers import SentenceTransformer
-import torch
+from datasets import load_dataset
+from sentence_transformers import (
+    SentenceTransformer,
+    SentenceTransformerTrainer,
+    SentenceTransformerTrainingArguments,
+    SentenceTransformerModelCardData,
+)
+from sentence_transformers.losses import MultipleNegativesRankingLoss
+from sentence_transformers.training_args import BatchSamplers
+from sentence_transformers.evaluation import TripletEvaluator
 
-def mean_pooling(model_output, attention_mask):
-    token_embeddings = model_output.last_hidden_state
-    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
-    sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
-    return sum_embeddings / sum_mask
+# 1. Load a model to finetune with 2. (Optional) model card data
+model = SentenceTransformer(
+    "microsoft/mpnet-base",
+    model_card_data=SentenceTransformerModelCardData(
+        language="en",
+        license="apache-2.0",
+        model_name="MPNet base trained on AllNLI triplets",
+    )
+)
 
-# Load base HF model and tokenizer
-tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-
-text = "This is a test sentence."
-
-# Match SentenceTransformer behavior
-inputs = tokenizer(text, return_tensors="pt")
-with torch.no_grad():
-    outputs = model(**inputs)
-    pooled_output = mean_pooling(outputs, inputs['attention_mask'])
-    pooled_output = torch.nn.functional.normalize(pooled_output, p=2, dim=1)
-
-# SentenceTransformer output
-model_se = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-with torch.no_grad():
-    embeddings = model_se.encode(text, convert_to_tensor=True)
-
-# Print difference
-print("Manual output:", pooled_output[0][:5])
-print("SentenceTransformer output:", embeddings[:5])
-print("Cosine similarity:", torch.nn.functional.cosine_similarity(pooled_output, embeddings.unsqueeze(0)))
+# 3. Load a dataset to finetune on
+dataset = load_dataset("sentence-transformers/all-nli","pair")
+train_dataset = dataset["train"].select(range(100_000))
+print(train_dataset[:5])

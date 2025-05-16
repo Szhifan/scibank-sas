@@ -55,6 +55,7 @@ def add_training_args(parser):
     # Add checkpoint arguments
     parser.add_argument('--save-dir', default='results/checkpoints', help='path to save checkpoints')
     parser.add_argument('--no-save', action='store_true', help='don\'t save models or checkpoints')
+    parser.add_argument('--checkpoint', default=None, type=str, help='path to a checkpoint to load from')
     # other arguments
     parser.add_argument('--dropout', type=float,default=0.1 ,metavar='D', help='dropout probability')
     parser.add_argument('--freeze-layers',default=10,type=int, metavar='F', help='number of encoder layers in bert whose parameters to be frozen')
@@ -98,6 +99,17 @@ def build_optimizer(model, args,total_steps):
         num_warmup_steps=args.warmup_proportion * total_steps,
         num_training_steps=total_steps,
     )
+    # if checkpoint path is provided, load optimizer and scheduler states
+    if args.checkpoint is not None:
+        checkpoint_path = os.path.join(args.checkpoint, "checkpoint")
+        if os.path.exists(checkpoint_path):
+            optimizer_path = os.path.join(checkpoint_path, "optimizer.pt")
+            scheduler_path = os.path.join(checkpoint_path, "scheduler.pt")
+            if os.path.isfile(optimizer_path) and os.path.isfile(scheduler_path):
+                map_location = DEFAULT_DEVICE
+                optimizer.load_state_dict(torch.load(optimizer_path, map_location=map_location))
+                scheduler.load_state_dict(torch.load(scheduler_path, map_location=map_location))
+                logger.info("Loaded optimizer and scheduler from checkpoint.")
 
     # Check if saved optimizer or scheduler states exist
     if os.path.isfile(os.path.join(args.save_dir, "checkpoint/optimizer.pt")) and os.path.isfile(
@@ -140,6 +152,12 @@ def load_model(args):
         freeze_embeddings=args.freeze_embeddings,
         
     )
+    # if checkpoint is provided, load the model state
+    if args.checkpoint is not None:
+        checkpoint_path = os.path.join(args.checkpoint, "checkpoint", "model.pt")
+        if os.path.exists(checkpoint_path):
+            model.load_state_dict(torch.load(checkpoint_path))
+            logger.info("Loaded model from checkpoint: %s", checkpoint_path)
     checkpoint_path = os.path.join(args.save_dir, "checkpoint", "model.pt")
     if os.path.exists(checkpoint_path):
         model.load_state_dict(torch.load(checkpoint_path))
