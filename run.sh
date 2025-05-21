@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-export WANDB_MODE="offline"
+
 ROOT=$(git rev-parse --show-toplevel)
 RESULTS_ROOT="${ROOT}/results"
 
@@ -14,14 +14,14 @@ EXP_ROOT="${RESULTS_ROOT}/${EXP_NAME}"
 
 mkdir -p ${EXP_ROOT}
 #Train model. Defaults are used for any argument not specified here. Use "\" to add arguments over multiple lines.
-python src/train_se.py --save-dir "${EXP_ROOT}" \
+python src/train_bsl.py --save-dir "${EXP_ROOT}" \
+    --model-name "t5-small" \
     --no-save \
     --batch-size 16 \
-    --lr 5e-5 \
-    --lr2 5e-3 \
+    --lr 2e-5 \
+    --lr2 5e-4 \
     --max-epoch 5 \
     --log-wandb \
-    --freeze-layers 6 \
 
             
                 

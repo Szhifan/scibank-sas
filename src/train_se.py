@@ -23,7 +23,7 @@ from utils import (
     save_report,
     save_prediction
     )
-from data_utils import LABEL2ID,ID2LABEL, SB_Dataset_SentenceEmbeddings
+from src.data_prep import LABEL2ID,ID2LABEL, SB_Dataset_SentenceEmbeddings
 from torch.utils.data import DataLoader
 import pandas as pd 
 
@@ -323,7 +323,7 @@ def evaluate(
 def main(args):
    
     if args.freeze_encoder:
-        args.freeze_layers = 8964
+        args.freeze_layers = 114514
     set_seed(args.seed)
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)

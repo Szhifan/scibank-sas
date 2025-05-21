@@ -3,7 +3,7 @@ from langchain_openai import OpenAI
 import os
 from nltk.tokenize import word_tokenize
 import nltk
-from data_utils import SB_Dataset
+from src.data_prep import SB_Dataset
 path_cred = "credentials_openai.txt"
 with open(path_cred, "r") as file:
     lines = file.readlines()

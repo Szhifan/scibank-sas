@@ -9,7 +9,7 @@ from torch.amp import GradScaler, autocast
 import logging
 import numpy as np
 from collections import deque, defaultdict
-from models import ASAG_CrossEncoder, get_tokenizer
+from models import ASAG_Encoder, get_tokenizer
 from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
 from tqdm import tqdm, trange
@@ -23,7 +23,7 @@ from utils import (
     save_report,
     save_prediction
     )
-from data_utils import SB_Dataset_BSL,LABEL2ID,ID2LABEL
+from data_prep import SB_Dataset,LABEL2ID,encoding_bsl,encoding_prompt
 from torch.utils.data import DataLoader
 import pandas as pd 
 
@@ -40,7 +40,6 @@ def add_training_args(parser):
     parser.add_argument('--model-name', default='bert-base-uncased', type=str, help='model type to use')
     parser.add_argument('--label-mode', default='3-ways', type=str, help='label mode to use')
     parser.add_argument('--seed', default=42, type=int, help='random seed for initialization')
-    parser.add_argument('--input-field', default='ref+ans', choices=['ref+ans', 'ans', 'q+ans'], type=str, help='input field to use')
     # Add optimization arguments
     parser.add_argument('--batch-size', default=32, type=int, help='maximum number of sentences in a batch')
     parser.add_argument('--max-epoch', default=3, type=int, help='force stop training at specified epoch')
@@ -49,6 +48,7 @@ def add_training_args(parser):
     parser.add_argument('--lr2', default=3e-5, type=float, help='learning rate for the second optimizer')
     parser.add_argument('--patience', default=3, type=int,
                         help='number of epochs without improvement on validation set before early stopping')
+    parser.add_argument('--grad-accumulation-steps', default=1, type=int, help='number of updates steps to accumulate before performing a backward/update pass')
     parser.add_argument('--weight-decay', default=0.01, type=float, help='weight decay for Adam')
     parser.add_argument('--adam-epsilon', default=1e-8, type=float, help='epsilon for Adam optimizer')
     parser.add_argument('--warmup-proportion', default=0.05, type=float, help='proportion of warmup steps')
@@ -145,7 +145,7 @@ def export_cp(model, optimizer, scheduler, args, model_name="model.pt"):
     logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
 def load_model(args):
-    model = ASAG_CrossEncoder(
+    model = ASAG_Encoder(
         model_name=args.model_name,
         num_labels=len(LABEL2ID[args.label_mode]),
         freeze_layers=args.freeze_layers,
@@ -209,7 +209,7 @@ def train_epoch(
             num_workers=0,
             pin_memory=True,
             batch_size=args.batch_size, 
-            collate_fn=SB_Dataset_BSL.collate_fn,
+            collate_fn=SB_Dataset.collate_fn,
             shuffle=True) 
         epoch_iterator = tqdm(
             train_dataloader, 
@@ -221,28 +221,28 @@ def train_epoch(
 
  
         for step, (batch, _) in enumerate(epoch_iterator):
-
             model.train()
             batch = batch_to_device(batch, DEFAULT_DEVICE)
-            with autocast(device_type=DEFAULT_DEVICE,enabled=args.fp16): # mixed precision training
+            with autocast(device_type=DEFAULT_DEVICE, enabled=args.fp16):  # mixed precision training
                 model_output = model(**batch)
-                loss = model_output.loss
-                tr_loss = loss.item()
+                loss = model_output.loss / args.grad_accumulation_steps  # normalize loss for gradient accumulation
+                tr_loss = loss.item() * args.grad_accumulation_steps  # scale back for logging
                 scaler.scale(loss).backward()
             label_id = batch["label_id"].detach().cpu().numpy()
             logits = model_output.logits.detach().cpu().numpy()
 
-            pred_id = np.argmax(logits, axis=1) 
+            pred_id = np.argmax(logits, axis=1)
             acc = accuracy_score(label_id, pred_id)
-       
-            acc_history.append(acc) 
+
+            acc_history.append(acc)
             loss_history.append(tr_loss)
-            if args.clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-            scheduler.step() 
+            if (step + 1) % args.grad_accumulation_steps == 0:  # perform optimizer step after accumulation
+                if args.clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                scheduler.step()
             epoch_iterator.set_description(
                 "Epoch {}|Training: loss {:.4f} acc {:.4f} ≈".format(
                     epoch,
@@ -292,7 +292,7 @@ def evaluate(
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        collate_fn=SB_Dataset_BSL.collate_fn,
+        collate_fn=SB_Dataset.collate_fn,
         shuffle=False) 
     
     data_iterator = tqdm(dataloader, desc="Evaluating", position=0 if is_test else 2, leave=True)
@@ -322,7 +322,7 @@ def evaluate(
 def main(args):
    
     if args.freeze_encoder:
-        args.freeze_layers = 8964
+        args.freeze_layers = 114514
     set_seed(args.seed)
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
@@ -339,7 +339,7 @@ def main(args):
         wandb.init(mode="disabled")
     logger.info("Training arguments: %s", args)
     # Load the dataset
-    sbank = SB_Dataset_BSL(label_mode=args.label_mode)
+    sbank = SB_Dataset(label_mode=args.label_mode)
     sbank.encode_all_splits(get_tokenizer(args.model_name))
     sb_dict = sbank.data_dict
     steps_per_epoch = int(np.ceil(len(sb_dict["train"]) / args.batch_size)) 
@@ -370,11 +370,6 @@ def main(args):
             optimizer,
             scheduler,
             args)  
-        
-
-
-
-
         logger.info("***** Training finished *****")
     # Evaluate on test dataset
     
@@ -391,13 +386,10 @@ def main(args):
         )
         
         test_metrics = eval_report(test_predictions, label2id=LABEL2ID[args.label_mode])
-        wandb.log({
-            f"{test_split}_eval": {
-                "loss": test_loss,
-                "f1": test_metrics["overall_f1"],
-                "accuracy": test_metrics["overall_acc"],
-            }
-        })
+        metrics_wandb = {f"{test_split}_eval": test_metrics}
+
+        wandb.log(metrics_wandb)
+        
         save_report(
             test_metrics,
             os.path.join(args.save_dir, f"{test_split}_results.json"),

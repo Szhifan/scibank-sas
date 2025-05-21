@@ -1,25 +1,9 @@
-from datasets import load_dataset
-from sentence_transformers import (
-    SentenceTransformer,
-    SentenceTransformerTrainer,
-    SentenceTransformerTrainingArguments,
-    SentenceTransformerModelCardData,
-)
-from sentence_transformers.losses import MultipleNegativesRankingLoss
-from sentence_transformers.training_args import BatchSamplers
-from sentence_transformers.evaluation import TripletEvaluator
+from transformers import T5ForSequenceClassification, T5Tokenizer
 
-# 1. Load a model to finetune with 2. (Optional) model card data
-model = SentenceTransformer(
-    "microsoft/mpnet-base",
-    model_card_data=SentenceTransformerModelCardData(
-        language="en",
-        license="apache-2.0",
-        model_name="MPNet base trained on AllNLI triplets",
-    )
-)
+text = "The quick brown fox jumps over the lazy dog."
+model_name = "google-t5/t5-small"
+# Load the pre-trained T5 model and tokenizer
+model = T5ForSequenceClassification.from_pretrained(model_name)
+for name, p in model.named_parameters():
 
-# 3. Load a dataset to finetune on
-dataset = load_dataset("sentence-transformers/all-nli","pair")
-train_dataset = dataset["train"].select(range(100_000))
-print(train_dataset[:5])
+    print(name, p.shape)

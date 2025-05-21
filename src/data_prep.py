@@ -1,6 +1,5 @@
 from typing import Literal
 from datasets import load_dataset,enable_caching,Dataset
-from transformers import AutoTokenizer
 import torch
 import json
 import tqdm 
@@ -78,13 +77,51 @@ ID2LABEL = {
     "2-ways": [k for k, v in LABEL2ID["2-ways"].items()],
 }
 
+def encoding_bsl(tokenizer,dataset,label_mode="3-ways"):
+    """
+    Baseline encoding function for the SciEntsBank dataset.
+    """
+    def tokenize_example(example, tokenizer):
+        encoding = tokenizer(
+            example["reference_answer"],
+            example["student_answer"],
+            truncation=True,
+        ) 
+
+        for e in encoding:
+            example[e] = encoding[e]
+        example["label_id"] = LABEL2ID[label_mode][example["label"]]
+        return example
+    return dataset.map(
+        lambda example: tokenize_example(example, tokenizer),
+    )
+def encoding_prompt(tokenizer,dataset,label_mode="3-ways"):
+    """
+    reformat the ref and student answer to a prompt format
+    """
+    def tokenize_example(example, tokenizer):
+        prompt = f"Reference Answer: {example['reference_answer']}. Student Answer: {example['student_answer']}"
+        encoding = tokenizer(
+            prompt,
+        )
+        for e in encoding:
+            example[e] = encoding[e]
+        example["label_id"] = LABEL2ID[label_mode][example["label"]]
+        return example
+
+    return dataset.map(
+        lambda example: tokenize_example(example, tokenizer),
+    )
+        
+
 class SB_Dataset:
-    def __init__(self,label_mode="3-ways"):
+    def __init__(self,label_mode="3-ways",enc_func=encoding_bsl):
         self.label_mode = label_mode  
         self.data_dict = load_dataset("nkazi/SciEntsBank")  
+        self.enc_func = enc_func
         for split in self.data_dict:
             self.data_dict[split] = self._format_label(self.data_dict[split], label_format=label_mode)
-
+        self.get_training_split()
     def _format_label(self,dataset,label_format: Literal["5-ways", "3-ways", "2-ways"] = "3-ways") -> None:
         """
         Formats the label based on the specified label format. The label is already in integer. 
@@ -130,6 +167,15 @@ class SB_Dataset:
         )
         self.data_dict["train"] = train_val_split["train"]
         self.data_dict["val"] = train_val_split["test"]
+    def encode_all_splits(self, tokenizer):
+        """
+        Encodes all splits in the data_dict using the provided tokenizer.
+
+        Args:
+            tokenizer: The tokenizer to use for encoding.
+        """
+        for split in self.data_dict:
+            self.data_dict[split] = self.enc_func(tokenizer, self.data_dict[split],self.label_mode)
     @staticmethod
     def collate_fn(input_batch):
         input_ids = torch.nn.utils.rnn.pad_sequence([torch.tensor(x["input_ids"]) for x in input_batch], batch_first=True)
@@ -155,51 +201,6 @@ class SB_Dataset:
             "label": [x["label"] for x in input_batch],
         }
         return batch, meta 
-
-
-class SB_Dataset_BSL(SB_Dataset):
-    def __init__(self, label_mode="3-ways",input_field="ref+ans"):
-        super().__init__(label_mode)
-        self.input_field = input_field
-        self.get_training_split()
-    def encode_all_splits(self, tokenizer):
-        """
-        Encodes all splits in the data_dict using the provided tokenizer.
-
-        Args:
-            tokenizer: The tokenizer to use for encoding.
-        """
-        for split in self.data_dict:
-            self.data_dict[split] = self.get_encoding(tokenizer, self.data_dict[split],self.input_field)
-    @staticmethod
-    def get_encoding(tokenizer,dataset,input_field="ref+ans"):
-        def tokenize_function(example, tokenizer,input_field):
-            if input_field == "ref+ans":
-                encoding = tokenizer(
-                    example["reference_answer"],
-                    example["student_answer"],
-                    truncation=True,
-                ) 
-            elif input_field == "ans":
-                encoding = tokenizer(
-                    example["student_answer"],
-                    truncation=True,
-                )
-            elif input_field == "q+ans":
-                encoding = tokenizer(
-                    example["question"],
-                    example["student_answer"],
-                    truncation=True,
-                )
-            example["input_ids"] = encoding["input_ids"]
-            example["attention_mask"] = encoding["attention_mask"]
-            if "token_type_ids" in encoding:
-                example["token_type_ids"] = encoding["token_type_ids"]
-            return example 
-        return dataset.map(
-            lambda example: tokenize_function(example, tokenizer,input_field),
-        )
-
 
 class SB_Dataset_SentenceEmbeddings(SB_Dataset):
     def __init__(self, label_mode="3-ways"):
@@ -280,12 +281,16 @@ class SB_Dataset_SentenceEmbeddings(SB_Dataset):
         }
         return batch, meta
 if __name__ == "__main__":
+    from transformers import AutoTokenizer
 
-    ds = SB_Dataset("2-ways")
-    train_ds = ds.data_dict["train"]
-    train_contrastive = get_contrastive(train_ds)
-    with open("data/contrastive_train_2ways.json", "w") as f:
-        json.dump(train_contrastive, f, indent=4)
-    
-
-    
+    tokenizer = AutoTokenizer.from_pretrained("t5-small")
+    text1 = "The quick brown fox jumps over the lazy dog."
+    text2 = "Hello, world!"
+    # Tokenize the input texts
+    encoding = tokenizer([text1,text2], truncation=True, return_tensors="pt",padding=True)
+    input_ids = encoding["input_ids"]
+    # Decode the input IDs back to tokens
+    decoded_tokens = []
+    eos_token_id = tokenizer.eos_token_id
+    eos_positions = input_ids.eq(eos_token_id)
+    print(eos_positions)
