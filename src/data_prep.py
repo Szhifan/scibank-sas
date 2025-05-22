@@ -112,7 +112,36 @@ def encoding_prompt(tokenizer,dataset,label_mode="3-ways"):
     return dataset.map(
         lambda example: tokenize_example(example, tokenizer),
     )
-        
+def encoding_cond_generation(tokenizer, dataset, label_mode="3-ways"):
+    """
+    Encodes the dataset for a conditional generation task.
+    The input is a prompt, and the output is the label to be generated.
+
+    Args:
+        tokenizer: The tokenizer to use for encoding.
+        dataset: The dataset to encode.
+        label_mode (str): The label mode, e.g., "3-ways".
+
+    Returns:
+        The encoded dataset.
+    """
+    def tokenize_example(example, tokenizer):
+        prompt = f"Reference Answer: {example['reference_answer']}\nStudent Answer: {example['student_answer']}"
+        encoding = tokenizer(
+            prompt
+        )
+        for e in encoding:
+            example[e] = encoding[e]
+        decoding = tokenizer(
+            example["label"],
+        )
+        for e in decoding:
+            example[f"decoder_{e}"] = decoding[e]
+        return example
+
+    return dataset.map(
+        lambda example: tokenize_example(example, tokenizer),
+    )
 
 class SB_Dataset:
     def __init__(self,label_mode="3-ways",enc_func=encoding_bsl):
@@ -192,7 +221,6 @@ class SB_Dataset:
             "label_id": torch.tensor([x["label_id"] for x in input_batch]),
 
         } 
-
         meta = {
             "id": [x["id"] for x in input_batch],
             "question": [x["question"] for x in input_batch],
@@ -201,6 +229,51 @@ class SB_Dataset:
             "label": [x["label"] for x in input_batch],
         }
         return batch, meta 
+class SB_Dataset_conditional_generation(SB_Dataset):  
+    def __init__(self, label_mode="3-ways",enc_func=encoding_cond_generation):
+        super().__init__(label_mode, enc_func=enc_func)
+        self.get_training_split()
+
+    def encode_all_splits(self, tokenizer):
+        """
+        Encodes all splits in the data_dict using the provided tokenizer.
+        Encodes reference answer and student answer separately.
+
+        Args:
+            tokenizer: The tokenizer to use for encoding.
+        """
+        for split in self.data_dict:
+            self.data_dict[split] = self.enc_func(tokenizer, self.data_dict[split],self.label_mode)
+    @staticmethod
+    def collate_fn(input_batch):
+        input_ids = torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(x["input_ids"]) for x in input_batch], batch_first=True
+        )
+        attention_mask = torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(x["attention_mask"]) for x in input_batch], batch_first=True
+        )
+        
+        batch = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "decoder_input_ids": torch.nn.utils.rnn.pad_sequence(
+                [torch.tensor(x["decoder_input_ids"]) for x in input_batch], batch_first=True
+            ),
+            "decoder_attention_mask": torch.nn.utils.rnn.pad_sequence(
+                [torch.tensor(x["decoder_attention_mask"]) for x in input_batch], batch_first=True
+            ),
+        }
+        
+        meta = {
+            "id": [x["id"] for x in input_batch],
+            "question": [x["question"] for x in input_batch],
+            "reference_answer": [x["reference_answer"] for x in input_batch],
+            "student_answer": [x["student_answer"] for x in input_batch],
+            "label": [x["label"] for x in input_batch],
+        }
+        
+        return batch, meta
+
 
 class SB_Dataset_SentenceEmbeddings(SB_Dataset):
     def __init__(self, label_mode="3-ways"):
@@ -280,17 +353,12 @@ class SB_Dataset_SentenceEmbeddings(SB_Dataset):
             "label": [x["label"] for x in input_batch],
         }
         return batch, meta
+
 if __name__ == "__main__":
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained("t5-small")
-    text1 = "The quick brown fox jumps over the lazy dog."
-    text2 = "Hello, world!"
-    # Tokenize the input texts
-    encoding = tokenizer([text1,text2], truncation=True, return_tensors="pt",padding=True)
-    input_ids = encoding["input_ids"]
-    # Decode the input IDs back to tokens
-    decoded_tokens = []
-    eos_token_id = tokenizer.eos_token_id
-    eos_positions = input_ids.eq(eos_token_id)
-    print(eos_positions)
+    sd = SB_Dataset_conditional_generation(label_mode="3-ways")
+    sd.encode_all_splits(tokenizer)
+    train_dataset = sd.data_dict["train"]
+    print(train_dataset[0])

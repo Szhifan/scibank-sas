@@ -1,21 +1,33 @@
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, T5Config
 
 import torch
-from transformers import RobertaModel, BertModel, AutoModel,T5Model
+from transformers import AutoModel,T5EncoderModel,T5ForConditionalGeneration
 from torch.nn import CrossEntropyLoss
 from dataclasses import dataclass
 from typing import Optional, Tuple
 import re 
-
-def get_tokenizer(model_name: str) -> AutoTokenizer:
-
-    return AutoTokenizer.from_pretrained(model_name)
 @dataclass
 class ModelOutput:
     logits: torch.Tensor
     loss: Optional[torch.Tensor] = None
+def mean_pooling(
+    model_output: ModelOutput, 
+    attention_mask: Optional[torch.Tensor] = None
+) -> torch.Tensor:
+    """
+    Perform mean pooling on the model output.
+    """
+    token_embeddings = model_output.last_hidden_state
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+    sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+    return sum_embeddings / sum_mask 
+def get_tokenizer(model_name: str) -> AutoTokenizer:
+
+    return AutoTokenizer.from_pretrained(model_name)
+
 class ClassificationHead(nn.Module):
     """Head for sentence-level classification tasks."""
 
@@ -39,11 +51,9 @@ class ASAG_Encoder(nn.Module):
     def __init__(self, model_name: str, num_labels: int, freeze_layers: int = 0, freeze_embeddings: bool = False):
     
         super().__init__()
-
+        self.is_t5 = "t5" in model_name
         self.model_name = model_name 
-        self.encoder = AutoModel.from_pretrained(model_name)
-        if "t5" in model_name:
-            self.encoder = self.encoder.get_encoder()
+        self.encoder = AutoModel.from_pretrained(model_name) if not self.is_t5 else T5EncoderModel.from_pretrained(model_name)
         hidden_size = self.encoder.config.hidden_size
         self.classifier = ClassificationHead(hidden_size, num_labels)
         self.num_labels = num_labels
@@ -59,7 +69,7 @@ class ASAG_Encoder(nn.Module):
         token_type_ids: Optional[torch.Tensor] = None, 
         label_id: Optional[torch.Tensor] = None
     ) -> ModelOutput:
-        if "t5" in self.model_name:
+        if self.is_t5:
             return self.forward_t5(input_ids, attention_mask, label_id)
  
         encoder_outputs = self.encoder(
@@ -124,25 +134,15 @@ class ASAG_Encoder(nn.Module):
         """
         Freeze the embedding layer.
         """
-        if hasattr(self.encoder, "embeddings"):
-            for param in self.encoder.embeddings.parameters():
-                param.requires_grad = False
-        if hasattr(self.encoder, "embed_tokens"):
+       
+        if self.is_t5:
             for param in self.encoder.embed_tokens.parameters():
                 param.requires_grad = False
+        else:
+            for param in self.encoder.embeddings.parameters():
+                param.requires_grad = False
 
-def mean_pooling(
-    model_output: ModelOutput, 
-    attention_mask: Optional[torch.Tensor] = None
-) -> torch.Tensor:
-    """
-    Perform mean pooling on the model output.
-    """
-    token_embeddings = model_output.last_hidden_state
-    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
-    sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
-    return sum_embeddings / sum_mask            
+           
 class ASAG_SentenceEmbeddings(nn.Module):
     def __init__(self,model_name: str, num_labels: int, freeze_layers: int = 0, freeze_embeddings: bool = False, use_multiplication = False):
         super().__init__()
@@ -189,43 +189,77 @@ class ASAG_SentenceEmbeddings(nn.Module):
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(logits.view(-1, self.num_labels), label_id.view(-1))
         return ModelOutput(logits=logits, loss=loss)
+
+class ASAG_T5_COND_GEN(nn.Module):
+    """
+    T5-based ASAG model using conditional generation
+    """
+    def __init__(self, model_name: str, freeze_layers: int = 0, freeze_embeddings: bool = False):
+        super().__init__()
+        t5_config = T5Config.from_pretrained(model_name)
+        self.model_name = model_name
+        self.t5_model = T5ForConditionalGeneration.from_pretrained(model_name, config=t5_config)
+        self.generate = self.t5_model.generate
+        if freeze_layers > 0:
+            self.freeze_layers(freeze_layers)
+        if freeze_embeddings:
+            self.freeze_embeddings()
+        
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        decoder_input_ids: Optional[torch.Tensor] = None,
+        decoder_attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None
+    ) -> ModelOutput:
+        """
+        Forward method for training
+        """
+        outputs = self.t5_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            decoder_attention_mask=decoder_attention_mask,
+            labels=labels
+        )
+
+        logits = outputs.logits
+        loss = outputs.loss
+
+        # Fallback loss computation in case `loss` is not returned (e.g., older versions)
+        if loss is None and labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
+            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        return ModelOutput(logits=logits, loss=loss)
+
     def freeze_layers(self, n_frozen_layers: int):
         """
-        Freeze the specified number of layers in the encoder.
+        Freeze the specified number of encoder layers
         """
-        for i, param in enumerate(self.se.encoder.layer.parameters()):
-            if i < n_frozen_layers:
-                param.requires_grad = False
-            else:
-                param.requires_grad = True
-    def freeze_embeddings(self):    
-        """
-        Freeze the embedding layer.
-        """
-        for param in self.se.embeddings.parameters():
-            param.requires_grad = False
         
+        regex = re.compile(r"block\.(\d+)")
+        for name, param in self.t5_model.named_parameters():
+            match = regex.search(name)
+            if match:
+                layer_num = int(match.group(1))
+                if layer_num < n_frozen_layers:
+                    param.requires_grad = False
+
+    def freeze_embeddings(self):
+        """
+        Freeze embedding layers
+        """
+        for param in self.t5_model.shared.parameters():
+            param.requires_grad = False
+  
     
 if __name__ == "__main__":
     # Import T5 tokenizer
     from transformers import T5Tokenizer
     # Define model name and tokenizer
-    model_name = "t5-small"
-    tokenizer = T5Tokenizer.from_pretrained(model_name)
-    batched_text = [
-        ["Hello, how are you?", "I am fine, thank you."],
-        ["What is your name?", "My name is T5."],
-        ["Where are you from?", "I am from the internet."],
-        ["What do you do?", "I help with natural language processing tasks."],
-        ["How old are you?", "I am ageless."],
-        
-    ]
-    encoding = tokenizer(
-        batched_text,
-        padding=True,
-        truncation=True,
-        max_length=64,
-        return_tensors="pt"
-    )
-    model = ASAG_Encoder(model_name, num_labels=2)
-    output = model(**encoding)
+    model = ASAG_T5_COND_GEN("t5-small",freeze_embeddings=True,freeze_layers=2)
+    for name, param in model.named_parameters():
+        print(name, param.requires_grad)
