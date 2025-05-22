@@ -28,7 +28,7 @@ def configure_logging(filename=None, level=logging.INFO):
         level=level,
     )
 
-def batch_to_device(batch, device):
+def zbatch_to_device(batch, device):
     """
     Move the batch to the specified device.
     """
@@ -60,7 +60,7 @@ def get_optimizer_step(optimizer):
     
 
    
-def metrics_calc(pred_id, label_id):
+def metrics_calc(label_id, pred_id):
     """
     Calculate the metrics for the predictions.
     """

@@ -21,7 +21,8 @@ from utils import (
     get_optimizer_step,
     eval_report,
     save_report,
-    save_prediction
+    save_prediction,
+    metrics_calc
     )
 from data_prep import SB_Dataset_conditional_generation,LABEL2ID
 from torch.utils.data import DataLoader
@@ -243,14 +244,14 @@ def train_epoch(
             best_metric = eval_loss
             export_cp(model, optimizer, scheduler, args, model_name="model.pt")
             logger.info("Best model saved at epoch %d", epoch)
-        elif eval_loss > best_metric:
+        else:
             bad_epochs += 1
         if bad_epochs >= args.patience:
             logger.info("Early stopping at epoch %d", epoch)
             break
        
 
-        logger.info("Epoch %d: Validation loss: %.4f, F1: %.4f, Accuracy: %.4f", epoch, eval_loss)
+        logger.info("Epoch %d: Validation loss: %.4f", epoch, eval_loss)
         wandb.log({
             "eval": {
                 "loss": eval_loss,
@@ -270,11 +271,11 @@ def evaluate(
     collate_fn=SB_Dataset_conditional_generation.collate_fn,
     shuffle=False)
 
-    data_iterator = tqdm(dataloader, desc="Evaluating", position=0 if is_test else 2, leave=True)
+    eval_iterator = tqdm(dataloader, desc="Evaluating", position=0 if is_test else 2, leave=True)
 
     model.eval()
     eval_loss = []
-    for step, (batch, _) in enumerate(data_iterator):
+    for step, (batch, _) in enumerate(eval_iterator):
         batch = batch_to_device(batch, DEFAULT_DEVICE)
         model_output = model(
             input_ids=batch["input_ids"],
@@ -283,8 +284,13 @@ def evaluate(
             decoder_attention_mask=batch["decoder_attention_mask"],
         )
         loss = model_output.loss
+        eval_iterator.set_description(
+            "Evaluating: loss {:.4f}".format(
+                loss.item(),
+            )
+        )
         eval_loss.append(loss.item())
-        eval_loss = np.mean(eval_loss)
+    eval_loss = np.mean(eval_loss)
     return eval_loss
 
 @torch.no_grad()
@@ -309,7 +315,8 @@ def inference(model, tokenizer, test_dataset):
         shuffle=False
     )
     generated_outputs = []
-    for batch, _ in tqdm(dataloader, desc="Generating Outputs"):
+    gold_labels = []
+    for batch, meta in tqdm(dataloader, desc="Generating Outputs"):
         batch = batch_to_device(batch, DEFAULT_DEVICE)
         outputs = model.generate(
             input_ids=batch["input_ids"],
@@ -323,7 +330,8 @@ def inference(model, tokenizer, test_dataset):
         generated_outputs.extend(
             [tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
         )
-    return generated_outputs
+        gold_labels.extend(meta["labels"]) 
+    return generated_outputs, gold_labels
 def main(args):
    
     if args.freeze_encoder:
@@ -344,8 +352,9 @@ def main(args):
         wandb.init(mode="disabled")
     logger.info("Training arguments: %s", args)
     # Load the dataset
+    tokenizer = get_tokenizer(args.model_name)
     sbank = SB_Dataset_conditional_generation(label_mode=args.label_mode)
-    sbank.encode_all_splits(get_tokenizer(args.model_name))
+    sbank.encode_all_splits(tokenizer)
     sb_dict = sbank.data_dict
     steps_per_epoch = int(np.ceil(len(sb_dict["train"]) / args.batch_size)) 
     total_steps = args.max_epoch * steps_per_epoch
@@ -383,16 +392,23 @@ def main(args):
         test_dataset = sb_dict[test_split]
         logger.info(f"***** Running evaluation on {test_split} set *****")
         logger.info("  Num examples = %d", len(test_dataset))
-        test_generated = inference(
+        generated_labels, gold_labels = inference(
             model,
-            sbank.tokenizer,
+            tokenizer,
             test_dataset
         )
         
-        
+        pred_id = [LABEL2ID[args.label_mode].get(label, 0) for label in generated_labels]
+        label_id = [LABEL2ID[args.label_mode].get(label, 0) for label in gold_labels]
+        eval_df = pd.DataFrame({"pred": pred_id, "label": label_id})
+        metrics = eval_report(eval_df, LABEL2ID[args.label_mode])
+        save_report(metrics, os.path.join(args.save_dir, f"{test_split}_metrics.json"))
+        metrics_wandb = {f"{test_split}_eval": metrics}
+
+        wandb.log(metrics_wandb)
         generated_path = os.path.join(args.save_dir, f"{test_split}_generated.txt")
         with open(generated_path, "w") as f:
-            for item in test_generated:
+            for item in generated_labels:
                 f.write("%s\n" % item)
         logger.info(f"Generated outputs saved to {generated_path}")
   
