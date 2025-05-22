@@ -213,7 +213,7 @@ class ASAG_T5_COND_GEN(nn.Module):
         decoder_input_ids: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None
-    ) -> ModelOutput:
+    ):
         """
         Forward method for training
         """
@@ -225,15 +225,10 @@ class ASAG_T5_COND_GEN(nn.Module):
             labels=labels
         )
 
-        logits = outputs.logits
-        loss = outputs.loss
-
-        # Fallback loss computation in case `loss` is not returned (e.g., older versions)
-        if loss is None and labels is not None:
-            loss_fct = CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
-            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
-
-        return ModelOutput(logits=logits, loss=loss)
+        return ModelOutput(
+            logits=outputs.logits,
+            loss=outputs.loss
+        )
 
     def freeze_layers(self, n_frozen_layers: int):
         """

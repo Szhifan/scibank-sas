@@ -5,3 +5,4 @@ nltk
 tqdm 
 wandb
 scikit-learn
+sentencepiece

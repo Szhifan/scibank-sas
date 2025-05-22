@@ -276,7 +276,12 @@ def evaluate(
     eval_loss = []
     for step, (batch, _) in enumerate(data_iterator):
         batch = batch_to_device(batch, DEFAULT_DEVICE)
-        model_output = model(**batch)
+        model_output = model(
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+            labels=batch["decoder_input_ids"],
+            decoder_attention_mask=batch["decoder_attention_mask"],
+        )
         loss = model_output.loss
         eval_loss.append(loss.item())
         eval_loss = np.mean(eval_loss)
